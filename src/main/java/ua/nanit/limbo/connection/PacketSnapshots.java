@@ -34,12 +34,14 @@ import ua.nanit.limbo.protocol.packets.login.PacketLoginSuccess;
 import ua.nanit.limbo.protocol.packets.play.*;
 import ua.nanit.limbo.protocol.registry.Version;
 import ua.nanit.limbo.server.LimboServer;
+import ua.nanit.limbo.server.data.SchematicConfig;
 import ua.nanit.limbo.server.data.Title;
 import ua.nanit.limbo.util.ComponentUtils;
 import ua.nanit.limbo.util.UUIDUtils;
 import ua.nanit.limbo.world.DimensionRegistry;
 import ua.nanit.limbo.world.DimensionType;
 import ua.nanit.limbo.world.VersionedDimension;
+import ua.nanit.limbo.world.schematic.SchematicWorld;
 
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
@@ -52,6 +54,7 @@ public class PacketSnapshots {
     public static PacketSnapshot PACKET_SPAWN_POSITION;
     public static PacketSnapshot PACKET_PLUGIN_MESSAGE;
     public static PacketSnapshot PACKET_PLAYER_ABILITIES;
+    public static PacketSnapshot PACKET_SCHEMATIC_ABILITIES;
     public static PacketSnapshot PACKET_PLAYER_INFO;
     public static PacketSnapshot PACKET_DECLARE_COMMANDS;
     public static PacketSnapshot PACKET_JOIN_MESSAGE;
@@ -61,6 +64,7 @@ public class PacketSnapshots {
     public static PacketSnapshot PACKET_PLAYER_POS_AND_LOOK_LEGACY;
     // For 1.19 we need to spawn player outside the world to avoid stuck in terrain loading
     public static PacketSnapshot PACKET_PLAYER_POS_AND_LOOK;
+    public static PacketSnapshot PACKET_SCHEMATIC_POS_AND_LOOK;
 
     public static PacketSnapshot PACKET_TITLE_TITLE;
     public static PacketSnapshot PACKET_TITLE_SUBTITLE;
@@ -83,6 +87,7 @@ public class PacketSnapshots {
 
     public static PacketSnapshot PACKET_FINISH_CONFIGURATION;
 
+    public static PacketSnapshot PACKET_CHUNK_CACHE_CENTER;
     public static List<PacketSnapshot> PACKETS_CHUNKS;
     public static PacketSnapshot PACKET_START_WAITING_CHUNKS;
 
@@ -99,6 +104,10 @@ public class PacketSnapshots {
         loginSuccess.setUuid(uuid);
         loginSuccess.setSessionId(UUID.randomUUID());
 
+        SchematicWorld schematicWorld = server.getSchematicWorld();
+        SchematicConfig schematicConfig = server.getConfig().getSchematic();
+        boolean hasSchematic = schematicWorld != null && schematicConfig != null;
+
         PacketLogin packetLogin = new PacketLogin();
         DimensionType dimensionType = server.getConfig().getDimensionType();
         DimensionRegistry dimensionRegistry = server.getDimensionRegistry();
@@ -113,7 +122,8 @@ public class PacketSnapshots {
         packetLogin.setPreviousGameMode(-1);
         packetLogin.setReducedDebugInfo(true);
         packetLogin.setDebug(false);
-        packetLogin.setViewDistance(0);
+        packetLogin.setViewDistance(hasSchematic ? schematicConfig.getViewDistance() : 0);
+        packetLogin.setSimulationDistance(hasSchematic ? schematicConfig.getViewDistance() : 2);
         packetLogin.setSeed(0);
         packetLogin.setDimension(versionedDimension);
 
@@ -130,14 +140,48 @@ public class PacketSnapshots {
         PacketPlayerPositionAndLook positionAndLook
                 = new PacketPlayerPositionAndLook(0, 400, 0, 0, 0, teleportId);
 
-        PacketSpawnPosition packetSpawnPosition = new PacketSpawnPosition(
-                versionedDimension.getKey(),
-                0,
-                400,
-                0,
-                0,
-                0
-        );
+        PacketSpawnPosition packetSpawnPosition;
+        if (hasSchematic) {
+            int gameMode = server.getConfig().getGameMode();
+            PacketPlayerAbilities schematicAbilities = new PacketPlayerAbilities();
+            schematicAbilities.setInvincible(true);
+            schematicAbilities.setCreative(gameMode == 1);
+            schematicAbilities.setCanFly(schematicConfig.isAllowFlight() || gameMode == 1 || gameMode == 3);
+            schematicAbilities.setFlying(gameMode == 3);
+            schematicAbilities.setFlyingSpeed(0.05F);
+            schematicAbilities.setFieldOfView(0.1F);
+            PACKET_SCHEMATIC_ABILITIES = PacketSnapshot.of(schematicAbilities);
+
+            PacketPlayerPositionAndLook schematicPosAndLook = new PacketPlayerPositionAndLook(
+                    schematicConfig.getSpawnX(),
+                    schematicConfig.getSpawnY(),
+                    schematicConfig.getSpawnZ(),
+                    schematicConfig.getSpawnYaw(),
+                    schematicConfig.getSpawnPitch(),
+                    teleportId
+            );
+            PACKET_SCHEMATIC_POS_AND_LOOK = PacketSnapshot.of(schematicPosAndLook);
+
+            packetSpawnPosition = new PacketSpawnPosition(
+                    versionedDimension.getKey(),
+                    (int) Math.floor(schematicConfig.getSpawnX()),
+                    (int) Math.floor(schematicConfig.getSpawnY()),
+                    (int) Math.floor(schematicConfig.getSpawnZ()),
+                    schematicConfig.getSpawnYaw(),
+                    schematicConfig.getSpawnPitch()
+            );
+        } else {
+            PACKET_SCHEMATIC_ABILITIES = null;
+            PACKET_SCHEMATIC_POS_AND_LOOK = null;
+            packetSpawnPosition = new PacketSpawnPosition(
+                    versionedDimension.getKey(),
+                    0,
+                    400,
+                    0,
+                    0,
+                    0
+            );
+        }
 
         PacketDeclareCommands declareCommands = new PacketDeclareCommands();
 
@@ -297,20 +341,57 @@ public class PacketSnapshots {
         packetGameEvent.setValue(0);
         PACKET_START_WAITING_CHUNKS = PacketSnapshot.of(packetGameEvent);
 
-        int chunkXOffset = 0; // Default x position is 0
-        int chunkZOffset = 0; // Default z position is 0
-        int chunkEdgeSize = 1;
+        List<Version> chunkVersions = Arrays.stream(Version.values())
+                .filter(v -> v.moreOrEqual(Version.V1_18))
+                .toList();
 
         List<PacketSnapshot> chunks = new ArrayList<>();
-        // Make multiple chunks for edges
-        for (int chunkX = chunkXOffset - chunkEdgeSize; chunkX <= chunkXOffset + chunkEdgeSize; ++chunkX) {
-            for (int chunkZ = chunkZOffset - chunkEdgeSize; chunkZ <= chunkZOffset + chunkEdgeSize; ++chunkZ) {
-                PacketChunkWithLight packetChunkWithLight = new PacketChunkWithLight();
-                packetChunkWithLight.setX(chunkX);
-                packetChunkWithLight.setZ(chunkZ);
-                packetChunkWithLight.setDimension(versionedDimension);
+        if (hasSchematic) {
+            int centerChunkX = (int) Math.floor(schematicConfig.getSpawnX()) >> 4;
+            int centerChunkZ = (int) Math.floor(schematicConfig.getSpawnZ()) >> 4;
+            int chunkRadius = schematicConfig.getViewDistance();
 
-                chunks.add(PacketSnapshot.of(packetChunkWithLight));
+            PacketSetChunkCacheCenter cacheCenter = new PacketSetChunkCacheCenter(centerChunkX, centerChunkZ);
+            PACKET_CHUNK_CACHE_CENTER = PacketSnapshot.of(PacketSetChunkCacheCenter.class, v -> cacheCenter, chunkVersions);
+
+            List<int[]> coords = new ArrayList<>();
+            for (int chunkX = centerChunkX - chunkRadius; chunkX <= centerChunkX + chunkRadius; ++chunkX) {
+                for (int chunkZ = centerChunkZ - chunkRadius; chunkZ <= centerChunkZ + chunkRadius; ++chunkZ) {
+                    coords.add(new int[]{chunkX, chunkZ});
+                }
+            }
+            // Send chunks closest to spawn first
+            coords.sort(Comparator.comparingInt(c -> {
+                int dx = c[0] - centerChunkX;
+                int dz = c[1] - centerChunkZ;
+                return dx * dx + dz * dz;
+            }));
+
+            for (int[] coord : coords) {
+                PacketChunkWithLight packetChunkWithLight = new PacketChunkWithLight(
+                        coord[0],
+                        coord[1],
+                        versionedDimension,
+                        schematicWorld
+                );
+                chunks.add(PacketSnapshot.of(PacketChunkWithLight.class, v -> packetChunkWithLight, chunkVersions));
+            }
+        } else {
+            PACKET_CHUNK_CACHE_CENTER = null;
+            int chunkXOffset = 0; // Default x position is 0
+            int chunkZOffset = 0; // Default z position is 0
+            int chunkEdgeSize = 1;
+
+            // Make multiple chunks for edges
+            for (int chunkX = chunkXOffset - chunkEdgeSize; chunkX <= chunkXOffset + chunkEdgeSize; ++chunkX) {
+                for (int chunkZ = chunkZOffset - chunkEdgeSize; chunkZ <= chunkZOffset + chunkEdgeSize; ++chunkZ) {
+                    PacketChunkWithLight packetChunkWithLight = new PacketChunkWithLight();
+                    packetChunkWithLight.setX(chunkX);
+                    packetChunkWithLight.setZ(chunkZ);
+                    packetChunkWithLight.setDimension(versionedDimension);
+
+                    chunks.add(PacketSnapshot.of(PacketChunkWithLight.class, v -> packetChunkWithLight, chunkVersions));
+                }
             }
         }
         PACKETS_CHUNKS = chunks;

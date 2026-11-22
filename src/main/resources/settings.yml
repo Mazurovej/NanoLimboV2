@@ -21,7 +21,31 @@ ping:
   protocol: -1
 
 # Available dimensions: OVERWORLD, THE_NETHER, THE_END
-dimension: THE_END
+dimension: OVERWORLD
+
+# World schematic configuration (Sponge Schematic .schem v2/v3, compatible with LOOHP Limbo)
+# Supported for 1.18+ clients; older clients remain in the void.
+schematic:
+  enable: true
+  # Path to the .schem file (relative to the server directory).
+  # If the file does not exist and is set to "spawn.schem", the default schematic is extracted automatically.
+  file: "spawn.schem"
+  # World offset where the schematic origin (0, 0, 0) will be placed
+  offset:
+    x: 0
+    y: 0
+    z: 0
+  # Player spawn location
+  spawn:
+    x: 20.5
+    y: 17.0
+    z: 22.5
+    yaw: -90.0
+    pitch: 0.0
+  # Chunk view distance around the spawn chunk
+  viewDistance: 6
+  # Whether the player is allowed to fly (creative and spectator modes always allow flight)
+  allowFlight: false
 
 # Whether to display the player in the player list
 # For 1.16.5 clients, the player list will be sent even if disabled, to avoid crash

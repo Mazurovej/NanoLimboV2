@@ -39,12 +39,24 @@ public class VersionedDimension {
         return getDimensionByProtocol(version).id();
     }
 
+    public int getMinY(@NonNull Version version) {
+        return getDimensionByProtocol(version).minY();
+    }
+
+    public int getMinSectionY(@NonNull Version version) {
+        return getMinY(version) >> 4;
+    }
+
     public int getHeight(@NonNull Version version) {
         return getDimensionByProtocol(version).height();
     }
 
     public int getChunkSections(@NonNull Version version) {
         return getHeight(version) / 16;
+    }
+
+    public boolean hasSkyLight(@NonNull Version version) {
+        return getDefaultCodec(version).getBoolean("has_skylight", true);
     }
 
     @NonNull

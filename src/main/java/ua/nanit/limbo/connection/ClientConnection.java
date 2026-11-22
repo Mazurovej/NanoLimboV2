@@ -168,10 +168,14 @@ public class ClientConnection extends ChannelInboundHandlerAdapter {
         updateState(State.PLAY);
 
         Runnable sendPlayPackets = () -> {
-            writePacket(PacketSnapshots.PACKET_JOIN_GAME);
-            writePacket(PacketSnapshots.PACKET_PLAYER_ABILITIES);
+            boolean useSchematic = server.getSchematicWorld() != null && clientVersion.moreOrEqual(Version.V1_18);
 
-            if (clientVersion.less(Version.V1_9)) {
+            writePacket(PacketSnapshots.PACKET_JOIN_GAME);
+            writePacket(useSchematic ? PacketSnapshots.PACKET_SCHEMATIC_ABILITIES : PacketSnapshots.PACKET_PLAYER_ABILITIES);
+
+            if (useSchematic) {
+                writePacket(PacketSnapshots.PACKET_SCHEMATIC_POS_AND_LOOK);
+            } else if (clientVersion.less(Version.V1_9)) {
                 writePacket(PacketSnapshots.PACKET_PLAYER_POS_AND_LOOK_LEGACY);
             } else {
                 writePacket(PacketSnapshots.PACKET_PLAYER_POS_AND_LOOK);
@@ -219,7 +223,15 @@ public class ClientConnection extends ChannelInboundHandlerAdapter {
                 writePacket(PacketSnapshots.PACKET_HEADER_AND_FOOTER);
             }
 
-            if (clientVersion.moreOrEqual(Version.V1_20_3)) {
+            if (useSchematic) {
+                if (clientVersion.moreOrEqual(Version.V1_20_3)) {
+                    writePacket(PacketSnapshots.PACKET_START_WAITING_CHUNKS);
+                }
+                if (PacketSnapshots.PACKET_CHUNK_CACHE_CENTER != null) {
+                    writePacket(PacketSnapshots.PACKET_CHUNK_CACHE_CENTER);
+                }
+                writePackets(PacketSnapshots.PACKETS_CHUNKS);
+            } else if (clientVersion.moreOrEqual(Version.V1_20_3)) {
                 writePacket(PacketSnapshots.PACKET_START_WAITING_CHUNKS);
 
                 writePackets(PacketSnapshots.PACKETS_CHUNKS);

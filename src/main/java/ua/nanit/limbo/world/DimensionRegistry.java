@@ -173,8 +173,9 @@ public final class DimensionRegistry {
 
                 int id = dimensionTag.getInt("id");
                 if (elementTag != null) {
+                    int minY = elementTag.getInt("min_y", 0);
                     int height = elementTag.getInt("height");
-                    return new Dimension(dimensionKey, id, height, codec, elementTag);
+                    return new Dimension(dimensionKey, id, minY, height, codec, elementTag);
                 }
             }
 
@@ -189,8 +190,9 @@ public final class DimensionRegistry {
         BiFunction<Integer, CompoundBinaryTag, Dimension> findLegacyDimension = (index, dimensionTag) -> {
             String name = dimensionTag.getString("name");
             if (name.equals(dimensionKey.toString())) {
+                int minY = dimensionTag.getInt("min_y", 0);
                 int height = dimensionTag.getInt("height");
-                return new Dimension(dimensionKey, index, height, codec, dimensionTag);
+                return new Dimension(dimensionKey, index, minY, height, codec, dimensionTag);
             }
 
             return null;

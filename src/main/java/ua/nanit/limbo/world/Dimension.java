@@ -23,6 +23,7 @@ import ua.nanit.limbo.server.data.NamespacedKey;
 
 public record Dimension(@NonNull NamespacedKey key,
                         int id,
+                        int minY,
                         int height,
                         @NonNull CompoundBinaryTag codec,
                         @NonNull CompoundBinaryTag defaultCodec) {

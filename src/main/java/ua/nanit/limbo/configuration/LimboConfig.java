@@ -87,6 +87,8 @@ public final class LimboConfig {
     private double maxPacketRate;
     private double maxPacketBytesRate;
 
+    private SchematicConfig schematic;
+
     public void load() throws Exception {
         ConfigurationOptions options = ConfigurationOptions.defaults().serializers(getSerializers());
         YamlConfigurationLoader loader = YamlConfigurationLoader.builder()
@@ -150,6 +152,22 @@ public final class LimboConfig {
         interval = conf.node("traffic", "interval").getDouble(-1.0);
         maxPacketRate = conf.node("traffic", "maxPacketRate").getDouble(-1.0);
         maxPacketBytesRate = conf.node("traffic", "maxPacketBytesRate").getDouble(-1.0);
+
+        schematic = new SchematicConfig();
+        ConfigurationNode schemNode = conf.node("schematic");
+        schematic.setEnabled(schemNode.node("enable").getBoolean(false));
+        schematic.setFile(schemNode.node("file").getString("spawn.schem"));
+        schematic.setOffsetX(schemNode.node("offset", "x").getInt(0));
+        schematic.setOffsetY(schemNode.node("offset", "y").getInt(0));
+        schematic.setOffsetZ(schemNode.node("offset", "z").getInt(0));
+        schematic.setSpawnX(schemNode.node("spawn", "x").getDouble(20.5));
+        schematic.setSpawnY(schemNode.node("spawn", "y").getDouble(17.0));
+        schematic.setSpawnZ(schemNode.node("spawn", "z").getDouble(22.5));
+        schematic.setSpawnYaw(schemNode.node("spawn", "yaw").getFloat(-90.0F));
+        schematic.setSpawnPitch(schemNode.node("spawn", "pitch").getFloat(0.0F));
+        int viewDist = schemNode.node("viewDistance").getInt(6);
+        schematic.setViewDistance(Math.max(1, Math.min(32, viewDist)));
+        schematic.setAllowFlight(schemNode.node("allowFlight").getBoolean(false));
     }
 
     @NonNull

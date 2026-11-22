@@ -26,8 +26,16 @@ import ua.nanit.limbo.connection.ClientChannelInitializer;
 import ua.nanit.limbo.connection.ClientConnection;
 import ua.nanit.limbo.connection.PacketHandler;
 import ua.nanit.limbo.connection.PacketSnapshots;
+import ua.nanit.limbo.server.data.SchematicConfig;
 import ua.nanit.limbo.world.DimensionRegistry;
+import ua.nanit.limbo.world.DimensionType;
+import ua.nanit.limbo.world.schematic.SchematicLoader;
+import ua.nanit.limbo.world.schematic.SchematicWorld;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -39,6 +47,7 @@ public final class LimboServer {
     private PacketHandler packetHandler;
     private Connections connections;
     private DimensionRegistry dimensionRegistry;
+    private SchematicWorld schematicWorld;
     private ScheduledFuture<?> keepAliveTask;
 
     private EventLoopGroup bossGroup;
@@ -60,6 +69,7 @@ public final class LimboServer {
         packetHandler = new PacketHandler(this);
         dimensionRegistry = new DimensionRegistry(this);
         dimensionRegistry.load();
+        loadSchematic();
         connections = new Connections(config);
 
         PacketSnapshots.initPackets(this);
@@ -77,6 +87,49 @@ public final class LimboServer {
         commandManager.start();
 
         System.gc();
+    }
+
+    private void loadSchematic() {
+        SchematicConfig schemConfig = config.getSchematic();
+        if (schemConfig == null || !schemConfig.isEnabled()) {
+            return;
+        }
+
+        Path schemPath = config.getRoot().resolve(schemConfig.getFile());
+        if (!Files.exists(schemPath)) {
+            if ("spawn.schem".equals(schemConfig.getFile())) {
+                try (InputStream in = getClass().getResourceAsStream("/spawn.schem")) {
+                    if (in != null) {
+                        if (schemPath.getParent() != null) {
+                            Files.createDirectories(schemPath.getParent());
+                        }
+                        Files.copy(in, schemPath);
+                        Log.info("Extracted default schematic to %s", schemPath);
+                    }
+                } catch (IOException e) {
+                    Log.error("Failed to extract default spawn.schem", e);
+                    return;
+                }
+            } else {
+                Log.warning("Schematic file %s not found; players will spawn in the void.", schemPath);
+                return;
+            }
+        }
+
+        try {
+            boolean hasSkyLight = config.getDimensionType() == DimensionType.OVERWORLD;
+            schematicWorld = SchematicLoader.load(
+                    schemPath,
+                    schemConfig.getOffsetX(),
+                    schemConfig.getOffsetY(),
+                    schemConfig.getOffsetZ(),
+                    hasSkyLight
+            );
+            Log.info("Loaded schematic %s (%d chunks)", schemConfig.getFile(), schematicWorld.getChunks().size());
+        } catch (Exception e) {
+            Log.error("Failed to load schematic " + schemPath + "; falling back to void.", e);
+            schematicWorld = null;
+        }
     }
 
     private void startBootstrap() {

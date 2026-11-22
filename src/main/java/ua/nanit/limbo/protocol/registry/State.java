@@ -460,13 +460,33 @@ public enum State {
                     map(0x27, V26_3, Version.getMax())
             );
             clientBound.register(PacketChunkWithLight::new,
-                    map(0x25, V1_20_3, V1_20_3),
+                    map(0x22, V1_18, V1_18_2),
+                    map(0x1F, V1_19, V1_19),
+                    map(0x21, V1_19_1, V1_19_1),
+                    map(0x20, V1_19_3, V1_19_3),
+                    map(0x24, V1_19_4, V1_20),
+                    map(0x25, V1_20_2, V1_20_3),
                     map(0x27, V1_20_5, V1_21),
                     map(0x28, V1_21_2, V1_21_4),
                     map(0x27, V1_21_5, V1_21_7),
                     map(0x2C, V1_21_9, V1_21_11),
                     map(0x2D, V26_1, V26_2),
                     map(0x2E, V26_3, Version.getMax())
+            );
+            clientBound.register(PacketSetChunkCacheCenter::new,
+                    map(0x49, V1_18, V1_18_2),
+                    map(0x48, V1_19, V1_19),
+                    map(0x4B, V1_19_1, V1_19_1),
+                    map(0x4A, V1_19_3, V1_19_3),
+                    map(0x4E, V1_19_4, V1_20),
+                    map(0x50, V1_20_2, V1_20_2),
+                    map(0x52, V1_20_3, V1_20_3),
+                    map(0x54, V1_20_5, V1_21),
+                    map(0x58, V1_21_2, V1_21_4),
+                    map(0x57, V1_21_5, V1_21_7),
+                    map(0x5C, V1_21_9, V1_21_11),
+                    map(0x5E, V26_1, V26_2),
+                    map(0x60, V26_3, Version.getMax())
             );
         }
     };
