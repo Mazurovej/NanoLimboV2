@@ -25,6 +25,7 @@ import java.io.BufferedInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.ref.SoftReference;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -32,11 +33,11 @@ import java.util.zip.GZIPInputStream;
 
 /**
  * Multi-version global block state ID lookup table for Minecraft 1.18 through 26.3.
- * Loads compact gzipped binary block registries from classpath resources under {@code /blocks/}.
+ * Loads compact gzipped binary block registries lazily from classpath resources under {@code /blocks/}.
  */
 public final class BlockMappings {
 
-    private static final Map<String, VersionMappings> CACHE = new ConcurrentHashMap<>();
+    private static final Map<String, SoftReference<VersionMappings>> CACHE = new ConcurrentHashMap<>();
 
     private BlockMappings() {
     }
@@ -44,7 +45,13 @@ public final class BlockMappings {
     @NonNull
     public static VersionMappings forVersion(@NonNull Version version) {
         String resourcePath = getResourcePath(version);
-        return CACHE.computeIfAbsent(resourcePath, BlockMappings::loadResource);
+        SoftReference<VersionMappings> ref = CACHE.get(resourcePath);
+        VersionMappings mappings = ref != null ? ref.get() : null;
+        if (mappings == null) {
+            mappings = loadResource(resourcePath);
+            CACHE.put(resourcePath, new SoftReference<>(mappings));
+        }
+        return mappings;
     }
 
     public static int getGlobalStateId(@NonNull Version version, @NonNull String blockState) {

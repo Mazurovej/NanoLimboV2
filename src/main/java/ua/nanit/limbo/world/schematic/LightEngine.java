@@ -23,15 +23,18 @@ import org.checkerframework.checker.nullness.qual.Nullable;
 import java.util.*;
 
 /**
- * BFS-based sky light and block light engine for a {@link SchematicWorld}.
+ * Memory-efficient BFS sky light and block light engine for a {@link SchematicWorld}.
+ * Uses a primitive int ring buffer (zero boxing) and releases temporary 3D buffers immediately
+ * after extracting non-empty 2048-byte section nibble arrays.
  */
 public final class LightEngine {
+
+    private static final int MAX_BFS_VOLUME = 8_000_000;
 
     private static final Map<String, Integer> BLOCK_LIGHT_LEVELS = new HashMap<>();
     private static final Set<String> TRANSPARENT_BLOCKS = new HashSet<>();
 
     static {
-        // Light-emitting blocks (based on vanilla Minecraft & LOOHP Limbo)
         BLOCK_LIGHT_LEVELS.put("minecraft:beacon", 15);
         BLOCK_LIGHT_LEVELS.put("minecraft:torch", 14);
         BLOCK_LIGHT_LEVELS.put("minecraft:wall_torch", 14);
@@ -85,16 +88,9 @@ public final class LightEngine {
     private final SchematicWorld world;
     private final boolean hasSkyLight;
 
-    // Padded bounding box aligned to chunk boundaries
-    private int originX;
-    private int originY;
-    private int originZ;
-    private int sizeX;
-    private int sizeY;
-    private int sizeZ;
-
-    private byte[] skyLight;
-    private byte[] blockLight;
+    // Compact sparse storage of pre-packed 2048-byte light sections
+    private final Map<Long, byte[]> skyLightSections = new HashMap<>();
+    private final Map<Long, byte[]> blockLightSections = new HashMap<>();
 
     public LightEngine(@NonNull SchematicWorld world, boolean hasSkyLight) {
         this.world = world;
@@ -106,35 +102,55 @@ public final class LightEngine {
             return;
         }
 
-        // Pad by 1 chunk (16 blocks) in all directions so light spreads smoothly at borders
-        int minChunkX = (world.getMinX() >> 4) - 1;
-        int maxChunkX = (world.getMaxX() >> 4) + 1;
-        int minChunkZ = (world.getMinZ() >> 4) - 1;
-        int maxChunkZ = (world.getMaxZ() >> 4) + 1;
-        int minSectionY = (world.getMinY() >> 4) - 1;
-        int maxSectionY = (world.getMaxY() >> 4) + 1;
+        int minChunkX = world.getMinX() >> 4;
+        int maxChunkX = world.getMaxX() >> 4;
+        int minChunkZ = world.getMinZ() >> 4;
+        int maxChunkZ = world.getMaxZ() >> 4;
+        int minSectionY = world.getMinY() >> 4;
+        int maxSectionY = world.getMaxY() >> 4;
 
-        this.originX = minChunkX << 4;
-        this.originY = minSectionY << 4;
-        this.originZ = minChunkZ << 4;
-        this.sizeX = (maxChunkX - minChunkX + 1) << 4;
-        this.sizeY = (maxSectionY - minSectionY + 1) << 4;
-        this.sizeZ = (maxChunkZ - minChunkZ + 1) << 4;
+        int originX = minChunkX << 4;
+        int originY = minSectionY << 4;
+        int originZ = minChunkZ << 4;
+        int sizeX = (maxChunkX - minChunkX + 1) << 4;
+        int sizeY = (maxSectionY - minSectionY + 1) << 4;
+        int sizeZ = (maxChunkZ - minChunkZ + 1) << 4;
 
-        int total = sizeX * sizeY * sizeZ;
-        this.blockLight = new byte[total];
-        if (hasSkyLight) {
-            this.skyLight = new byte[total];
+        long volume = (long) sizeX * sizeY * sizeZ;
+        if (volume <= 0 || volume > MAX_BFS_VOLUME) {
+            // Very large schematic: avoid giant 3D arrays and fill populated chunks with full skylight
+            if (hasSkyLight) {
+                byte[] fullLight = new byte[2048];
+                Arrays.fill(fullLight, (byte) 0xFF);
+                for (SchematicWorld.ChunkPos pos : world.getChunks().keySet()) {
+                    for (int sy = minSectionY; sy <= maxSectionY; sy++) {
+                        skyLightSections.put(sectionKey(pos.x(), pos.z(), sy), fullLight);
+                    }
+                }
+            }
+            return;
         }
 
-        computeBlockLight();
+        int total = (int) volume;
+
+        // Compute block light, extract sections, then immediately free the 3D array
+        byte[] blockLight = new byte[total];
+        computeBlockLight(blockLight, originX, originY, originZ, sizeX, sizeY, sizeZ);
+        extractAllSections(blockLight, blockLightSections, minChunkX, maxChunkX, minChunkZ, maxChunkZ, minSectionY, maxSectionY, sizeX, sizeZ);
+        blockLight = null;
+
+        // Compute sky light, extract sections, then immediately free the 3D array
         if (hasSkyLight) {
-            computeSkyLight();
+            byte[] skyLight = new byte[total];
+            computeSkyLight(skyLight, originX, originY, originZ, sizeX, sizeY, sizeZ);
+            extractAllSections(skyLight, skyLightSections, minChunkX, maxChunkX, minChunkZ, maxChunkZ, minSectionY, maxSectionY, sizeX, sizeZ);
         }
     }
 
-    private void computeBlockLight() {
-        ArrayDeque<Integer> queue = new ArrayDeque<>();
+    private void computeBlockLight(byte[] blockLight,
+                                   int originX, int originY, int originZ,
+                                   int sizeX, int sizeY, int sizeZ) {
+        IntRingQueue queue = new IntRingQueue(4096);
 
         for (int x = world.getMinX(); x <= world.getMaxX(); x++) {
             for (int y = world.getMinY(); y <= world.getMaxY(); y++) {
@@ -142,21 +158,23 @@ public final class LightEngine {
                     String block = world.getBlock(x, y, z);
                     int level = getBlockLightEmission(block);
                     if (level > 0) {
-                        int idx = index(x - originX, y - originY, z - originZ);
-                        if (level > blockLight[idx]) {
+                        int idx = index(x - originX, y - originY, z - originZ, sizeX, sizeZ);
+                        if (level > (blockLight[idx] & 0xFF)) {
                             blockLight[idx] = (byte) level;
-                            queue.add(idx);
+                            queue.push(idx);
                         }
                     }
                 }
             }
         }
 
-        propagateBfs(blockLight, queue);
+        propagateBfs(blockLight, queue, originX, originY, originZ, sizeX, sizeY, sizeZ);
     }
 
-    private void computeSkyLight() {
-        ArrayDeque<Integer> queue = new ArrayDeque<>();
+    private void computeSkyLight(byte[] skyLight,
+                                 int originX, int originY, int originZ,
+                                 int sizeX, int sizeY, int sizeZ) {
+        IntRingQueue queue = new IntRingQueue(4096);
 
         for (int lx = 0; lx < sizeX; lx++) {
             int wx = originX + lx;
@@ -168,17 +186,20 @@ public final class LightEngine {
                     if (!isLightTransparent(block)) {
                         break;
                     }
-                    int idx = index(lx, ly, lz);
+                    int idx = index(lx, ly, lz, sizeX, sizeZ);
                     skyLight[idx] = 15;
-                    queue.add(idx);
+                    queue.push(idx);
                 }
             }
         }
 
-        propagateBfs(skyLight, queue);
+        propagateBfs(skyLight, queue, originX, originY, originZ, sizeX, sizeY, sizeZ);
     }
 
-    private void propagateBfs(byte[] lightArray, ArrayDeque<Integer> queue) {
+    private void propagateBfs(byte[] lightArray,
+                              IntRingQueue queue,
+                              int originX, int originY, int originZ,
+                              int sizeX, int sizeY, int sizeZ) {
         final int[] dx = {1, -1, 0, 0, 0, 0};
         final int[] dy = {0, 0, 1, -1, 0, 0};
         final int[] dz = {0, 0, 0, 0, 1, -1};
@@ -203,7 +224,7 @@ public final class LightEngine {
                 if (nx < 0 || nx >= sizeX || ny < 0 || ny >= sizeY || nz < 0 || nz >= sizeZ) {
                     continue;
                 }
-                int nIdx = index(nx, ny, nz);
+                int nIdx = index(nx, ny, nz, sizeX, sizeZ);
                 if ((lightArray[nIdx] & 0xFF) >= nextLevel) {
                     continue;
                 }
@@ -212,74 +233,79 @@ public final class LightEngine {
                     continue;
                 }
                 lightArray[nIdx] = (byte) nextLevel;
-                queue.add(nIdx);
+                queue.push(nIdx);
             }
         }
     }
 
-    private int index(int lx, int ly, int lz) {
-        return (ly * sizeZ + lz) * sizeX + lx;
-    }
+    private static void extractAllSections(byte[] lightArray,
+                                           Map<Long, byte[]> target,
+                                           int minChunkX, int maxChunkX,
+                                           int minChunkZ, int maxChunkZ,
+                                           int minSectionY, int maxSectionY,
+                                           int sizeX, int sizeZ) {
+        for (int cx = minChunkX; cx <= maxChunkX; cx++) {
+            int baseX = (cx - minChunkX) << 4;
+            for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
+                int baseZ = (cz - minChunkZ) << 4;
+                for (int sy = minSectionY; sy <= maxSectionY; sy++) {
+                    int baseY = (sy - minSectionY) << 4;
+                    byte[] data = new byte[2048];
+                    boolean nonZero = false;
+                    int outIdx = 0;
 
-    /**
-     * Returns the 2048-byte packed nibble array for the given chunk section's sky light,
-     * or {@code null} if all blocks in that section have light level 0.
-     */
-    public byte @Nullable [] getSkyLightSection(int chunkX, int chunkZ, int sectionY) {
-        if (!hasSkyLight) {
-            return null;
-        }
-        return extractSection(skyLight, chunkX, chunkZ, sectionY, (byte) 15);
-    }
+                    for (int y = 0; y < 16; y++) {
+                        for (int z = 0; z < 16; z++) {
+                            int rowBase = index(baseX, baseY + y, baseZ + z, sizeX, sizeZ);
+                            for (int x = 0; x < 16; x += 2) {
+                                int even = lightArray[rowBase + x] & 0x0F;
+                                int odd = lightArray[rowBase + x + 1] & 0x0F;
+                                byte packed = (byte) ((odd << 4) | even);
+                                data[outIdx++] = packed;
+                                if (packed != 0) {
+                                    nonZero = true;
+                                }
+                            }
+                        }
+                    }
 
-    /**
-     * Returns the 2048-byte packed nibble array for the given chunk section's block light,
-     * or {@code null} if all blocks in that section have light level 0.
-     */
-    public byte @Nullable [] getBlockLightSection(int chunkX, int chunkZ, int sectionY) {
-        return extractSection(blockLight, chunkX, chunkZ, sectionY, (byte) 0);
-    }
-
-    private byte @Nullable [] extractSection(byte @Nullable [] lightArray,
-                                             int chunkX,
-                                             int chunkZ,
-                                             int sectionY,
-                                             byte outOfBoundsDefault) {
-        int startX = chunkX << 4;
-        int startY = sectionY << 4;
-        int startZ = chunkZ << 4;
-
-        boolean inside = lightArray != null
-                && startX >= originX && startX + 16 <= originX + sizeX
-                && startY >= originY && startY + 16 <= originY + sizeY
-                && startZ >= originZ && startZ + 16 <= originZ + sizeZ;
-
-        if (!inside) {
-            return null;
-        }
-
-        byte[] data = new byte[2048];
-        boolean nonZero = false;
-        int baseX = startX - originX;
-        int baseY = startY - originY;
-        int baseZ = startZ - originZ;
-
-        int outIdx = 0;
-        for (int y = 0; y < 16; y++) {
-            for (int z = 0; z < 16; z++) {
-                int rowBase = index(baseX, baseY + y, baseZ + z);
-                for (int x = 0; x < 16; x += 2) {
-                    int even = lightArray[rowBase + x] & 0x0F;
-                    int odd = lightArray[rowBase + x + 1] & 0x0F;
-                    byte packed = (byte) ((odd << 4) | even);
-                    data[outIdx++] = packed;
-                    if (packed != 0) {
-                        nonZero = true;
+                    if (nonZero) {
+                        target.put(sectionKey(cx, cz, sy), data);
                     }
                 }
             }
         }
-        return nonZero ? data : null;
+    }
+
+    private static int index(int lx, int ly, int lz, int sizeX, int sizeZ) {
+        return (ly * sizeZ + lz) * sizeX + lx;
+    }
+
+    private static long sectionKey(int chunkX, int chunkZ, int sectionY) {
+        return (((long) chunkX & 0x3FFFFFL) << 42)
+                | (((long) chunkZ & 0x3FFFFFL) << 20)
+                | ((long) sectionY & 0xFFFFFL);
+    }
+
+    public byte @Nullable [] getSkyLightSection(int chunkX, int chunkZ, int sectionY) {
+        if (!hasSkyLight) {
+            return null;
+        }
+        return skyLightSections.get(sectionKey(chunkX, chunkZ, sectionY));
+    }
+
+    public byte @Nullable [] getBlockLightSection(int chunkX, int chunkZ, int sectionY) {
+        return blockLightSections.get(sectionKey(chunkX, chunkZ, sectionY));
+    }
+
+    public boolean hasLightForChunk(int chunkX, int chunkZ, int minSectionY, int lightSections) {
+        for (int i = 0; i < lightSections; i++) {
+            long key = sectionKey(chunkX, chunkZ, minSectionY - 1 + i);
+            if (skyLightSections.containsKey(key) || blockLightSections.containsKey(key)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static int getBlockLightEmission(@NonNull String blockState) {
@@ -322,5 +348,48 @@ public final class LightEngine {
                 || name.endsWith("_banner")
                 || name.endsWith("_trapdoor")
                 || name.endsWith("_door");
+    }
+
+    private static final class IntRingQueue {
+        private int[] data;
+        private int head;
+        private int tail;
+        private int size;
+
+        IntRingQueue(int initialCapacity) {
+            this.data = new int[Integer.highestOneBit(Math.max(16, initialCapacity - 1)) << 1];
+        }
+
+        boolean isEmpty() {
+            return size == 0;
+        }
+
+        void push(int value) {
+            if (size == data.length) {
+                grow();
+            }
+            data[tail] = value;
+            tail = (tail + 1) & (data.length - 1);
+            size++;
+        }
+
+        int poll() {
+            int value = data[head];
+            head = (head + 1) & (data.length - 1);
+            size--;
+            return value;
+        }
+
+        private void grow() {
+            int[] next = new int[data.length << 1];
+            int firstPart = data.length - head;
+            System.arraycopy(data, head, next, 0, firstPart);
+            if (head > 0) {
+                System.arraycopy(data, 0, next, firstPart, head);
+            }
+            data = next;
+            head = 0;
+            tail = size;
+        }
     }
 }

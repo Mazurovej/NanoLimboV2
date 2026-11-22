@@ -230,7 +230,7 @@ public class ClientConnection extends ChannelInboundHandlerAdapter {
                 if (PacketSnapshots.PACKET_CHUNK_CACHE_CENTER != null) {
                     writePacket(PacketSnapshots.PACKET_CHUNK_CACHE_CENTER);
                 }
-                writePackets(PacketSnapshots.PACKETS_CHUNKS);
+                writePackets(PacketSnapshots.getSchematicChunks(clientVersion));
             } else if (clientVersion.moreOrEqual(Version.V1_20_3)) {
                 writePacket(PacketSnapshots.PACKET_START_WAITING_CHUNKS);
 
@@ -280,8 +280,8 @@ public class ClientConnection extends ChannelInboundHandlerAdapter {
         sendPacket(PacketSnapshots.PACKET_FINISH_CONFIGURATION);
     }
 
-    private void writePackets(@NonNull List<PacketSnapshot> packets) {
-        for (PacketSnapshot packet : packets) {
+    private void writePackets(@NonNull List<? extends Packet> packets) {
+        for (Packet packet : packets) {
             writePacket(packet);
         }
     }

@@ -25,6 +25,7 @@ import org.checkerframework.checker.nullness.qual.Nullable;
 import ua.nanit.limbo.LimboConstants;
 import ua.nanit.limbo.protocol.ByteMessage;
 import ua.nanit.limbo.protocol.MetadataWriter;
+import ua.nanit.limbo.protocol.PacketOut;
 import ua.nanit.limbo.protocol.PacketSnapshot;
 import ua.nanit.limbo.protocol.packets.configuration.PacketFinishConfiguration;
 import ua.nanit.limbo.protocol.packets.configuration.PacketKnownPacks;
@@ -90,6 +91,11 @@ public class PacketSnapshots {
     public static PacketSnapshot PACKET_CHUNK_CACHE_CENTER;
     public static List<PacketSnapshot> PACKETS_CHUNKS;
     public static PacketSnapshot PACKET_START_WAITING_CHUNKS;
+
+    private static VersionedDimension SCHEMATIC_DIMENSION;
+    private static SchematicWorld SCHEMATIC_WORLD;
+    private static List<int[]> SCHEMATIC_CHUNK_COORDS;
+    private static final Map<Version, java.lang.ref.SoftReference<List<PacketOut>>> SCHEMATIC_CHUNKS_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
 
     public static void initPackets(@NonNull LimboServer server) {
         String playerListName = server.getConfig().getPlayerListUsername();
@@ -345,7 +351,7 @@ public class PacketSnapshots {
                 .filter(v -> v.moreOrEqual(Version.V1_18))
                 .toList();
 
-        List<PacketSnapshot> chunks = new ArrayList<>();
+        SCHEMATIC_CHUNKS_CACHE.clear();
         if (hasSchematic) {
             int centerChunkX = (int) Math.floor(schematicConfig.getSpawnX()) >> 4;
             int centerChunkZ = (int) Math.floor(schematicConfig.getSpawnZ()) >> 4;
@@ -367,21 +373,20 @@ public class PacketSnapshots {
                 return dx * dx + dz * dz;
             }));
 
-            for (int[] coord : coords) {
-                PacketChunkWithLight packetChunkWithLight = new PacketChunkWithLight(
-                        coord[0],
-                        coord[1],
-                        versionedDimension,
-                        schematicWorld
-                );
-                chunks.add(PacketSnapshot.of(PacketChunkWithLight.class, v -> packetChunkWithLight, chunkVersions));
-            }
+            SCHEMATIC_DIMENSION = versionedDimension;
+            SCHEMATIC_WORLD = schematicWorld;
+            SCHEMATIC_CHUNK_COORDS = coords;
+            PACKETS_CHUNKS = Collections.emptyList();
         } else {
+            SCHEMATIC_DIMENSION = null;
+            SCHEMATIC_WORLD = null;
+            SCHEMATIC_CHUNK_COORDS = null;
             PACKET_CHUNK_CACHE_CENTER = null;
             int chunkXOffset = 0; // Default x position is 0
             int chunkZOffset = 0; // Default z position is 0
             int chunkEdgeSize = 1;
 
+            List<PacketSnapshot> chunks = new ArrayList<>();
             // Make multiple chunks for edges
             for (int chunkX = chunkXOffset - chunkEdgeSize; chunkX <= chunkXOffset + chunkEdgeSize; ++chunkX) {
                 for (int chunkZ = chunkZOffset - chunkEdgeSize; chunkZ <= chunkZOffset + chunkEdgeSize; ++chunkZ) {
@@ -393,8 +398,36 @@ public class PacketSnapshots {
                     chunks.add(PacketSnapshot.of(PacketChunkWithLight.class, v -> packetChunkWithLight, chunkVersions));
                 }
             }
+            PACKETS_CHUNKS = chunks;
         }
-        PACKETS_CHUNKS = chunks;
+    }
+
+    @NonNull
+    public static List<PacketOut> getSchematicChunks(@NonNull Version version) {
+        if (SCHEMATIC_WORLD == null || SCHEMATIC_DIMENSION == null || SCHEMATIC_CHUNK_COORDS == null) {
+            return Collections.emptyList();
+        }
+        java.lang.ref.SoftReference<List<PacketOut>> ref = SCHEMATIC_CHUNKS_CACHE.get(version);
+        List<PacketOut> cached = ref != null ? ref.get() : null;
+        if (cached != null) {
+            return cached;
+        }
+
+        List<PacketOut> built = new ArrayList<>(SCHEMATIC_CHUNK_COORDS.size());
+        for (int[] coord : SCHEMATIC_CHUNK_COORDS) {
+            int cx = coord[0];
+            int cz = coord[1];
+            if (SCHEMATIC_WORLD.getChunk(cx, cz) != null) {
+                PacketChunkWithLight packet = new PacketChunkWithLight(cx, cz, SCHEMATIC_DIMENSION, SCHEMATIC_WORLD);
+                built.add(PacketSnapshot.of(packet, version));
+            } else {
+                // Empty chunk outside the schematic: tiny object, encoded directly without caching bytes
+                built.add(new PacketChunkWithLight(cx, cz, SCHEMATIC_DIMENSION, null));
+            }
+        }
+        List<PacketOut> unmodifiable = Collections.unmodifiableList(built);
+        SCHEMATIC_CHUNKS_CACHE.put(version, new java.lang.ref.SoftReference<>(unmodifiable));
+        return unmodifiable;
     }
 
     @Nullable
